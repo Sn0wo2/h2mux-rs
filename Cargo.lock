@@ -89,7 +89,7 @@ dependencies = [
 
 [[package]]
 name = "h2mux-rs"
-version = "0.0.0"
+version = "0.0.1"
 dependencies = [
  "bytes",
  "futures-util",

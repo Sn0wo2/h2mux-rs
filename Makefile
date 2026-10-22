@@ -1,8 +1,6 @@
-.DEFAULT_GOAL := ci
-
-CARGO_FLAGS ?=
-
 .PHONY: all fmt fmt-check check check-all-features check-no-default lint lint-fix test test-all test-no-default doc security ci build publish-dry release release-snapshot clean
+
+ci: lint check check-no-default test test-all test-no-default doc security
 
 all: ci
 
@@ -27,14 +25,8 @@ lint-fix: fmt
 lint: fmt-check
 	cargo clippy --workspace --all-targets --all-features $(CARGO_FLAGS) -- -D warnings
 
-test:
-	cargo test --workspace $(CARGO_FLAGS)
-
-test-all:
-	cargo test --workspace --all-features $(CARGO_FLAGS)
-
-test-no-default:
-	cargo test --workspace --no-default-features $(CARGO_FLAGS)
+test test-all test-no-default:
+	cargo test --workspace $(patsubst test-%,--%-features,$(filter-out test,$@)) $(CARGO_FLAGS)
 
 doc:
 	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features $(CARGO_FLAGS)
@@ -42,21 +34,14 @@ doc:
 security:
 	cargo deny check
 
-ci: lint check check-all-features check-no-default test test-all test-no-default doc security
-
 build:
 	cargo build --workspace $(CARGO_FLAGS)
 
 publish-dry:
 	cargo publish --dry-run --allow-dirty
 
-release:
-	node scripts/release-metadata.js
-	goreleaser release --clean --skip=publish,validate --config target/goreleaser.json
-
-release-snapshot:
-	node scripts/release-metadata.js
-	goreleaser release --snapshot --clean --skip=publish,validate --config target/goreleaser.json
+release release-snapshot:
+	goreleaser release $(if $(filter release-snapshot,$@),--snapshot) --clean --skip=publish,validate
 
 clean:
 	cargo clean

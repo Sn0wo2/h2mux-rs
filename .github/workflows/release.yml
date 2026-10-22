@@ -13,17 +13,16 @@ on:
       snapshot:
         description: "Snapshot mode (no bump, no tag, no publish)"
         type: boolean
-        default: false
 
 permissions:
   contents: read
 
 concurrency:
   group: release-${{ github.workflow }}-${{ github.event.repository.default_branch }}
-  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
+  DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
 
 jobs:
   prepare:
@@ -39,29 +38,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          ref: ${{ (github.event_name == 'push' || inputs.snapshot == true) && github.ref || github.event.repository.default_branch }}
+          ref: ${{ (github.event_name == 'push' || inputs.snapshot) && github.ref || github.event.repository.default_branch }}
           fetch-depth: 0
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy,rustfmt
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ${{ github.event.repository.name }}-cargo
+          cache-workspace-crates: true
           cache-on-failure: true
 
-      - name: Install cargo tools
-        uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@v2
         with:
           tool: cargo-edit,cargo-deny
 
       - name: Update manual release base
-        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.snapshot }}
-        env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        if: &manual-release github.event_name == 'workflow_dispatch' && !inputs.snapshot
         run: |
           git fetch origin "$DEFAULT_BRANCH"
           git checkout --detach FETCH_HEAD
@@ -69,35 +63,61 @@ jobs:
       - name: Normalize version
         id: version
         env:
-          RELEASE_VERSION: ${{ github.event_name == 'push' && github.ref_name || inputs.version }}
-        run: node scripts/release.js normalize-version
+          RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          version=${RELEASE_VERSION#v}
+          if [[ $version != [0-9]* || $(npm exec --yes --package=semver@7 -- semver "$version") != "${version%%+*}" ]]; then
+            echo "Invalid semantic version: $RELEASE_VERSION" >&2
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Refuse existing release tag
-        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.snapshot }}
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
+        if: *manual-release
         run: |
           if git ls-remote --exit-code --refs origin "refs/tags/v$VERSION" >/dev/null; then
             echo "Tag v$VERSION already exists" >&2
             exit 1
+          else
+            [[ $? == 2 ]]
           fi
 
       - name: Bump version
-        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.snapshot }}
+        if: *manual-release
         run: cargo set-version --workspace "$VERSION"
 
       - name: Verify workspace versions and publishable crates
         id: metadata
+        uses: actions/github-script@v9
         env:
-          VERSION: ${{ steps.version.outputs.version }}
-          VERIFY_VERSION: ${{ github.event_name == 'push' || !inputs.snapshot }}
-        run: node scripts/release.js verify-metadata
+          VERIFY_VERSION: ${{ !inputs.snapshot }}
+        with:
+          script: |
+            const { packages, workspace_default_members } = JSON.parse(
+              (await exec.getExecOutput("cargo", ["metadata", "--no-deps", "--format-version", "1"], { silent: true })).stdout,
+            )
+            const publishable = packages.filter((pkg) => pkg.publish == null || pkg.publish.includes("crates-io"))
+            if (process.env.VERIFY_VERSION === "true") {
+              const mismatches = packages.filter((pkg) =>
+                pkg.version !== process.env.VERSION && (publishable.includes(pkg) ||
+                  (workspace_default_members.includes(pkg.id) && pkg.targets.some((target) => target.kind.includes("bin")))),
+              )
+              if (mismatches.length) {
+                throw new Error(`Expected released packages to have version ${process.env.VERSION}:\n${mismatches.map((pkg) => `  ${pkg.name} ${pkg.version}`).join("\n")}`)
+              }
+            }
+            if (context.eventName === "push" && context.sha !==
+                (await exec.getExecOutput("git", ["rev-parse", "HEAD"], { silent: true })).stdout.trim()) {
+              throw new Error("Checked out commit does not match the pushed tag commit")
+            }
+            core.setOutput("has_publishable_crates", publishable.length > 0)
 
       - name: Run gated checks
         run: make ci
 
       - name: Commit version bump
-        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.snapshot }}
+        if: *manual-release
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -105,9 +125,7 @@ jobs:
           git diff --cached --quiet || git commit -m "chore(release): bump version to $VERSION"
 
       - name: Push version commit and tag
-        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.snapshot }}
-        env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        if: *manual-release
         run: |
           git tag "v$VERSION"
           git push --atomic origin "HEAD:refs/heads/$DEFAULT_BRANCH" "HEAD:refs/tags/v$VERSION"
@@ -118,8 +136,6 @@ jobs:
 
   build:
     name: Build artifacts
-    permissions:
-      contents: read
     needs: prepare
     uses: ./.github/workflows/build.yml
     with:
@@ -151,21 +167,44 @@ jobs:
           path: dist
 
       - name: Generate checksums
-        run: node scripts/release.js generate-checksums
+        working-directory: dist
+        run: |
+          shopt -s nullglob
+          files=(*.tar.gz *.zip)
+          if ((${#files[@]})); then sha256sum -- "${files[@]}" > checksums.txt; fi
 
       - name: Verify crates.io credentials
-        if: ${{ needs.prepare.outputs.has_publishable_crates == 'true' }}
+        if: &publish-crates needs.prepare.outputs.has_publishable_crates == 'true'
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: test -n "$CARGO_REGISTRY_TOKEN"
+        run: ': "${CARGO_REGISTRY_TOKEN:?CARGO_REGISTRY_TOKEN is not set}"'
 
       - name: Create GitHub release
+        uses: actions/github-script@v9
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: node scripts/release.js create-release
+        with:
+          script: |
+            const tag = `v${process.env.VERSION}`
+            try {
+              const { data } = await github.rest.repos.getReleaseByTag({ ...context.repo, tag })
+              if (data.tag_name !== tag || data.draft !== false) {
+                throw new Error(`Release ${tag} is a draft or points to an unexpected tag`)
+              }
+              core.info(`Release ${tag} already exists; leaving its tag and assets unchanged`)
+              return
+            } catch (error) {
+              if (error.status !== 404) throw error
+            }
+            await exec.exec("gh", [
+              "release", "create", tag,
+              ...await (await glob.create("dist/*.tar.gz\ndist/*.zip\ndist/checksums.txt", { matchDirectories: false })).glob(),
+              "--verify-tag", "--generate-notes", "--title", tag,
+              ...(process.env.VERSION.split("+", 1)[0].includes("-") ? ["--prerelease"] : []),
+            ])
 
       - name: Publish to crates.io
-        if: ${{ needs.prepare.outputs.has_publishable_crates == 'true' }}
+        if: *publish-crates
         uses: katyo/publish-crates@v2
         with:
           registry-token: ${{ secrets.CARGO_REGISTRY_TOKEN }}
