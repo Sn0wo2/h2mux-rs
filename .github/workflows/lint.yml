@@ -81,6 +81,7 @@ jobs:
         with:
           commit-message: "chore: auto-fix Rust formatting and lint"
           branch: auto-fix/rust-${{ github.event.pull_request.number || github.ref_name }}
+          base: ${{ github.event.pull_request.head.ref || github.ref_name }}
           delete-branch: true
           title: "chore: auto-fix Rust formatting and lint"
           body: "Automated rustfmt and Clippy fixes from CI. Unfixable lint issues remain blocking."

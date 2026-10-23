@@ -32,6 +32,18 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install cargo-edit
+        if: ${{ !inputs.snapshot }}
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-edit
+
+      - name: Sync workspace version
+        if: ${{ !inputs.snapshot }}
+        run: cargo set-version --workspace "$VERSION"
+        env:
+          VERSION: ${{ inputs.version }}
+
       - uses: Swatinem/rust-cache@v2
         with:
           cache-workspace-crates: true
