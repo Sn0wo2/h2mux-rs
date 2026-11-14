@@ -1,7 +1,7 @@
 [package]
 name = "h2mux-rs"
 description = "HTTP/2 multiplexed stream protocol"
-version = "0.0.1"
+version = "0.0.3"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/Sn0wo2/h2mux-rs"
