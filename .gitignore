@@ -1,11 +1,9 @@
 debug
 target
 dist
-*.rs.bk
+**/*.rs.bk
 *.pdb
-mutants.out*/
+**/mutants.out*/
 rustc-ice-*.txt
 .idea/
 .vscode/
-node_modules/
-.zig-cache/
