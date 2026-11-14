@@ -161,8 +161,9 @@ unescaped_backticks = "warn"
 
 [dependencies]
 bytes = "1"
-futures-util = "0.3"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 h2 = "0.4.20"
 http = "1"
 tokio = { version = "1", features = ["io-util"] }
-tracing = "0.1"
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+unsigned-varint = "0.8.0"
